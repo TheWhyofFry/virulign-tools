@@ -1,0 +1,4 @@
+['genbank_to_virulign.py', '/home/werner/Downloads/hxb2.xml', 'tat_exon2', '8379', '8469\r']
+<?xml version="1.0" encoding="UTF-8"?>
+<orf name="tat_exon2" referenceSequence="acccacctcccaaccccgaggggacccgacaggcccgaaggaatagaagaagaaggtggagagagagacagagacagatccattcgattag" >
+</orf>

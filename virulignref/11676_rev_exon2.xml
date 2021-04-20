@@ -1,0 +1,4 @@
+['genbank_to_virulign.py', '/home/werner/Downloads/hxb2.xml', 'rev_exon2', '8381', '8653\r']
+<?xml version="1.0" encoding="UTF-8"?>
+<orf name="rev_exon2" referenceSequence="ccacctcccaaccccgaggggacccgacaggcccgaaggaatagaagaagaaggtggagagagagacagagacagatccattcgattagtgaacggatccttggcacttatctgggacgatctgcggagcctgtgcctcttcagctaccaccgcttgagagacttactcttgattgtaacgaggattgtggaacttctgggacgcagggggtgggaagccctcaaatattggtggaatctcctacagtattggagtcaggaactaaagaatag" >
+</orf>

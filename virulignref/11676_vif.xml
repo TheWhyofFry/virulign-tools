@@ -1,0 +1,6 @@
+['genbank_to_virulign.py', '/home/werner/Downloads/hxb2.xml', 'vif', '5041', '5619\r']
+<?xml version="1.0" encoding="UTF-8"?>
+<orf name="vif" referenceSequence="atggaaaacagatggcaggtgatgattgtgtggcaagtagacaggatgaggattagaacatggaaaagtttagtaaaacaccatatgtatgtttcagggaaagctaggggatggttttatagacatcactatgaaagccctcatccaagaataagttcagaagtacacatcccactaggggatgctagattggtaataacaacatattggggtctgcatacaggagaaagagactggcatttgggtcagggagtctccatagaatggaggaaaaagagatatagcacacaagtagaccctgaactagcagaccaactaattcatctgtattactttgactgtttttcagactctgctataagaaaggccttattaggacacatagttagccctaggtgtgaatatcaagcaggacataacaaggtaggatctctacaatacttggcactagcagcattaataacaccaaaaaagataaagccacctttgcctagtgttacgaaactgacagaggatagatggaacaagccccagaagaccaagggccacagagggagccacacaatgaatggacactag" >
+
+<protein abbreviation="vif" startPosition="1" stopPosition="579"/>
+</orf>

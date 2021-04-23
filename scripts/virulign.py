@@ -34,14 +34,14 @@ import os
 import shutil
 import subprocess
 import io
+import tempfile
+import pandas as pd
 
-
-
-def readfasta(f,upper=True):
+def read_fasta(f,upper=True):
     #fasta_dict = {}
     fasta_list = []
     curseq = ""
-   
+    currentkey = ""
     fastafile = open(f, "r") if type(f) is str else f
     for line in fastafile:
         if line.startswith(">"):
@@ -72,7 +72,7 @@ def write_fasta(fasta_list, output_file="string"):
 
     output = "\n".join([">%s\n%s\n"%(title,seq) for title, seq in fasta_list])
 
-    if output_file = "string":
+    if output_file == "string":
         return output
     else:
         with open(output_file,"w") as outfile:
@@ -80,13 +80,14 @@ def write_fasta(fasta_list, output_file="string"):
         return True
 
 def run_output(command):
-
-    proc = subprocess.Popen(command.split(" "), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
+    print(command)
+    command_split = list(map(lambda x:x.replace("#", " "),command.split(" ")))
+    proc = subprocess.Popen(command_split, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = proc.communicate()
-
-    return_code = proc.returncode
-
+    stdout = stdout.decode('utf-8').replace("\\n","\n")
+    stderr = stderr.decode('utf-8').replace("\\n","\n")
+    returncode = proc.returncode
+    
     return stdout, stderr, returncode
 
 def parse_virulign(stdout):
@@ -101,11 +102,12 @@ def parse_virulign(stdout):
 def find_missing_entries(query_fasta, virulign_fasta):
 
     query_entries = [title for title, seq in query_fasta]
-    virulign_entries = [title for title, seq in query_fasta]
+    virulign_entries = [title for title, seq in virulign_fasta]
 
-
+    
     missing_entries =  set(query_entries).difference(virulign_entries)
-    return [(title, seq) for title,seq in query_entries if title in missing_entries]
+    print("MISSING ENTRIES:", missing_entries, len(query_fasta), len(virulign_fasta))
+    return [(title, seq) for title,seq in query_fasta if title in missing_entries]
 
 
 def blast(missing_entries, blast_db, blast_prog="blastn", other_options=""):
@@ -123,40 +125,42 @@ def initial_alignment(fasta_file, virulign_ref_file, virulign_command="virulign"
                       alphabet="AminoAcids", exportkind="GlobalAlignment",
                       exportwithref="yes", maxFrameShifts=3):
     
-    virulign_command = "{virulign_command} {virulign_ref_file} {fasta_file} --exportKind {exportkind} --exportAlphabet {alphabet} --exportWithReference {ref}" +
-                       " --maxFrameShifts {maxFrameShifts}"
+    virulign_command_template = "{v} {virulign_ref_file} {fasta_file} --exportKind {exportkind} --exportAlphabet {alphabet} --exportReferenceSequence {ref}" + \
+                                   " --maxFrameShifts {maxFrameShifts}"
 
-    stdout, stderr, returncode = run_command(virulign_command.format(virulign_command=virulign_command,
+        
+    stdout, stderr, returncode = run_output(virulign_command_template.format(v=virulign_command,
                                                                      virulign_ref_file=virulign_ref_file,
                                                                      fasta_file=fasta_file,
                                                                      exportkind=exportkind,
                                                                      alphabet=alphabet,
                                                                      ref=exportwithref,
-                                                                     maxFrameShifts=maxFrameShifts)
+                                                                     maxFrameShifts=maxFrameShifts))
     # Fix that quirky case when arbitrary characters are written out by virulignmp
     if ">" in stdout:
-        stdout = stdout[stdout.index(">"):]
+        #stdout = stdout[stdout.index(">"):]
 
         with io.StringIO(stdout) as fasta_output:
             fasta_list = read_fasta(fasta_output)
-
+    else:
+        fasta_list = []
     return fasta_list
 
 
         
 def do_secondary(missing_entries, ref_entry, virulign_params={}):
     
-    temp_ref_file = tempfile.mkstemp(prefix="virulign-tools", suffix=".fasta", dir="/tmp")
-    temp_missing_file = tempfile.mkstemp(prefix="virulign-tools", suffix=".fasta", dir="/tmp")
-
+    code, temp_ref_file = tempfile.mkstemp(prefix="virulign-tools", suffix=".fasta", dir="/tmp")
+    code, temp_missing_file = tempfile.mkstemp(prefix="virulign-tools", suffix=".fasta", dir="/tmp")
+    print("TEMP MISSING FILE:", temp_missing_file)
     write_fasta(missing_entries, temp_missing_file)
 
     with open(temp_ref_file, 'w') as temp_ref:
-        temp_ref.write(">%s\n%s\n"%(*ref_entry))
+        temp_ref.write(">%s\n%s\n"%(ref_entry))
 
     
     # We'll just directly assume frameshifts are OK
-    secondary_alignment = initial_alignment(temp_ref_file, temp_missing_file, **virlulign_params)
+    secondary_alignment = initial_alignment(temp_missing_file, temp_ref_file,  **virulign_params)
 
     secondary_missing_entries = find_missing_entries(missing_entries, secondary_alignment)
 
@@ -164,8 +168,8 @@ def do_secondary(missing_entries, ref_entry, virulign_params={}):
         missing_entries = secondary_missing_entries
     
 
-    os.unlink(temp_ref_file)
-    os.unlink(temp_missing_file)
+    #os.unlink(temp_ref_file)
+    #os.unlink(temp_missing_file)
 
 
     return secondary_alignment, secondary_missing_entries
@@ -183,16 +187,16 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_option("-i", type=str, dest="input_fasta", help="Input FASTA file")
-    parser.add_option("-n", type=str, dest="output_fasta", help="Output FASTA file (nuc)")
-    parser.add_option("-a", type=str, dest="output_fasta", help="Output FASTA file (aa)")
-    parser.add_option("-r", type=str, dest="virulign_ref_file", help="Initial Virulign reference file")
-    parser.add_option("-b", type=str, dest="blastn_db", help="BLASTN DB", default="")
-    parser.add_option("-B", type=str, dest="blastp_db", help="BLASTP DB", default="")
-    parser.add_option("-X", action=store_true, dest="do_blastx", help="If all else fails, align with BLASTX")
-    parser.add_option("-R", action=store_true, dest="do_selfref", help="Align failed sequences to sequences that passed first")
-    parser.add_option("-N", action=store_true, dest="do_blastn", help="Repeat alignment for failed sequences using the specified BLASTN DB")
-    parser.add_option("-s", type=int, dest="num_alignments", help="Number of blast alignments", default=20)
+    parser.add_argument("-i", type=str, dest="input_fasta", help="Input FASTA file")
+    parser.add_argument("-n", type=str, dest="output_fasta", help="Output FASTA file (nuc)")
+    parser.add_argument("-a", type=str, dest="output_fasta", help="Output FASTA file (aa)")
+    parser.add_argument("-r", type=str, dest="virulign_ref_file", help="Initial Virulign reference file")
+    parser.add_argument("-b", type=str, dest="blastn", help="BLASTN DB", default="")
+    parser.add_argument("-B", type=str, dest="blastp", help="BLASTP DB", default="")
+    parser.add_argument("-X", action='store_true', dest="do_blastx", help="If all else fails, align with BLASTX")
+    parser.add_argument("-R", action='store_true', dest="do_selfref", help="Align failed sequences to sequences that passed first")
+    parser.add_argument("-N", action='store_true', dest="do_blastn", help="Repeat alignment for failed sequences using the specified BLASTN DB")
+    parser.add_argument("-s", type=int, dest="num_alignments", help="Number of blast alignments", default=20)
 
     
     args = parser.parse_args()
@@ -205,18 +209,20 @@ if __name__ == "__main__":
     # Initial alignment
     fasta_initial_alignment = initial_alignment(args.input_fasta, args.virulign_ref_file, maxFrameShifts=0, alphabet="Nucleotides")
     fasta_initial_alignment_aa = initial_alignment(args.input_fasta, args.virulign_ref_file, maxFrameShifts=0, alphabet="AminoAcids")
-
-    reference = final_initial_alignment[0]
+    reference = fasta_initial_alignment[0]
     # Missing alignemnts
 
     missing_entries = find_missing_entries(fasta_initial, fasta_initial_alignment)
-    
+    print([title for title,seq in fasta_initial])
+    print([title for title,seq in fasta_initial_alignment])
+    temp_alignments = []
     n_missing_entries = len(missing_entries)
-    if n_missing_entries > 0:
-        temp_alignments = []
-        missings_entries_file = tempfile.mkstemp(prefix="virulign-tools", suffix=".fasta",dir="/tmp")
+    print("Missing entries:", n_missing_entries)
 
-        write_fasta(missing_entries, missings_entries_file)
+    if n_missing_entries > 0:
+        code, missing_entries_file = tempfile.mkstemp(prefix="virulign-tools", suffix=".fasta",dir="/tmp")
+        print("MISSING ENTRY FILE:", missing_entries_file, code)
+        write_fasta(missing_entries, missing_entries_file)
 
         blastn_fasta_entries = []
 
@@ -228,20 +234,20 @@ if __name__ == "__main__":
             # A fundamental reference sequence (e.g. HXB2 in HIV-1) with a query
             # and WITHOUT any frame shift compensation
 
-            BLASTN = "blastn -db {db} -query {query} -num_alignments {n} -outfmt '6 qseqid sseqid bitscore'".format(args.blastn,
-                                                                                                                    missing_entries_file,
-                                                                                                                    args.num_alignments)
-
-            blastn_output, stderr, returncode = run_command(BLASTN)
-
-            with io.StringIO(blastn_output, 'r') as blastn_output_f:
-                blastn_df = pd.read_table(blastn_output_f,col_names=["qseqid", "sseqid", "bitscore"])
-                blast_hits = blastn_df.value_counts:("sseqid").sort_values(ascending=False).reset_index().sseqid.values
-
-                blastn_entries, stderr, returncode = run_command('blastdbcmd -entry "{entry}"'.format(','.join(blast_hits)))
-
+            BLASTN = "blastn -db {db} -query {query} -num_alignments {n} -outfmt 6#qseqid#sseqid#bitscore".format(db=args.blastn,
+                                                                                                                    query=missing_entries_file,
+                                                                                                                    n=args.num_alignments)
+            print(BLASTN)
+            blastn_output, stderr, returncode = run_output(BLASTN)
+            with io.StringIO(blastn_output) as blastn_output_f:
+                blastn_df = pd.read_table(blastn_output_f,names=["qseqid", "sseqid", "bitscore"])
+                blast_hits = blastn_df.value_counts("sseqid").sort_values(ascending=False).reset_index().sseqid.values
+                print("BLAST HITS:")
+                blastn_entries, stderr, returncode = run_output('blastdbcmd -entry "{entry}" -db {db}'.format(entry=','.join(blast_hits),db=args.blastn))
+                
                 with io.StringIO(blastn_entries) as blast_file:
-                    blastn_fasta_entries = readfasta(blast_file)
+                    blastn_fasta_entries = read_fasta(blast_file)
+                    print("BLASTN Entries:", blastn_fasta_entries)
 
             
 
@@ -256,12 +262,17 @@ if __name__ == "__main__":
         # Placeholder
         rep = True
         if rep:
-            alternative_alignments = fasta_initial_alignment_ref + blastn_fasta_entries 
+            print("Finding appropriate references ... ")
+            alternative_alignments = fasta_initial_alignment_ref + blastn_fasta_entries
+            print([title for title,seq in alternative_alignments])
             for fasta_entry in alternative_alignments:
-                secondary_alignment, missing_entries = do_secondary(missing_entries, fasta_entry, virulign_params=dict(alphabet="AminoAcids"))
+                title, seq = fasta_entry
+                print(title)
+                secondary_alignment, missing_entries = do_secondary(missing_entries, fasta_entry, virulign_params=dict(alphabet="AminoAcids", exportwithref="no"))
 
                 if len(secondary_alignment) == 0:
                     continue
+                
                 temp_alignments.extend(secondary_alignment)
 
                 n_missing_entries -= len(secondary_alignment)
@@ -269,8 +280,11 @@ if __name__ == "__main__":
                 if n_missing_entries == 0:
                     break
 
+    final_alignments_aa = fasta_initial_alignment_aa + temp_alignments
 
-
+    print(len(final_alignments_aa))
+    write_fasta(final_alignments_aa, "/dev/stderr")
+        
 
                 
 

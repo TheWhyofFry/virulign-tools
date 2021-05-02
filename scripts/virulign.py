@@ -36,6 +36,19 @@ import subprocess
 import io
 import tempfile
 import pandas as pd
+import math
+
+
+def remap(seq):
+
+    seq_nogaps = seq.replace("-","")
+
+    return pd.Series([i for i,s in enumerate(seq) if s != '-'],index=range(len(seq_nogaps)))
+
+
+
+
+
 
 def read_fasta(f,upper=True):
     #fasta_dict = {}
@@ -174,6 +187,133 @@ def do_secondary(missing_entries, ref_entry, virulign_params={}):
 
     return secondary_alignment, secondary_missing_entries
 
+def hamming(s1,s2):
+    return sum([1 for a,b in zip(s1,s2) if a != b])
+
+def get_valid_hits(blastx_hits):
+
+        valid_hits = list(blastx_hits.sstart.diff().values[1:] >= 0) + [True]
+       
+
+        blastx_hits = blastx_hits[valid_hits] 
+        print(blastx_hits[["qstart","qend", "sstart","send"]])
+        print(valid_hits)
+        valid_hits = [True] + list(blastx_hits.send.diff().values[1:] >= 0) 
+        
+
+        blastx_hits = blastx_hits[valid_hits]
+
+        print(blastx_hits[["qstart","qend","sstart","send"]])
+        return blastx_hits
+
+def recreate_seq(blastx_hits):
+
+    # Sort according to query start position
+    blastx_hits = blastx_hits.sort_values("qstart")
+
+    # Remove spurious alignments 
+    # Check if the qstart/sstart sequences follow ascendingly
+
+
+    # If multiple hits, we need to check how to concatenate them
+    # If there are overlaps, resolve which alignment is the best (hamming distance - with ties, the first is used)
+    # If there are not, replace the frameshifted region (non-matchin region) with X
+    chain = []
+    if len(blastx_hits) > 1:
+        blastx_hits = get_valid_hits(blastx_hits)
+        # iterate through 
+        current_hit = blastx_hits.iloc[0,]
+        current_hit.mask = 0
+        current_hit.qseq_remap = remap(current_hit.qseq)
+        current_hit.sseq_remap = remap(current_hit.sseq)
+
+    
+        blastx_hits = blastx_hits.iloc[1:,]
+
+
+        for idx,hit_ in blastx_hits.iterrows():
+            hit = hit_.copy()
+            hit.mask = 0
+            hit.sseq_remap = remap(hit.sseq)
+            hit.qseq_remap = remap(hit.qseq)
+            print("Current hit end: {qend}; hit start: {qstart}".format(qend=current_hit.qend, qstart=hit.qstart))
+            if hit.qstart < current_hit.qend:
+                aa_pos_span = math.ceil((current_hit.qend - hit.qstart + 1)/3)
+                
+                aa_pos_remap_qseq_current_hit = current_hit.qseq_remap.index.max() - aa_pos_span
+                aa_pos_remap_qseq_hit = hit.qseq_remap[aa_pos_span]
+
+                hamming_hit = hamming(hit.qseq[:aa_pos_remap_qseq_hit], hit.sseq[:aa_pos_remap_qseq_hit])
+                hamming_current_hit = hamming(current_hit.qseq[:aa_pos_remap_qseq_current_hit], current_hit.sseq[:aa_pos_remap_qseq_current_hit])
+                
+
+                if hamming_hit < hamming_current_hit:
+                    o = current_hit.qseq_remap.index.max() - aa_pos_span + 1
+                    trim_pos = current_hit.qseq_remap.loc[current_hit.qseq_remap.index.max() - aa_pos_span + 1]
+                    qseq = current_hit.qseq
+                    print("Trim pos:",trim_pos, aa_pos_span, o, len(current_hit.qseq), hit.sstart, hit.send)
+                    current_hit.qseq = current_hit.qseq[:trim_pos]
+                    print(qseq, len(qseq), current_hit.qseq, len(current_hit.qseq))
+                    
+
+                else:
+                    print("Hit adjusted")
+                    mask = hit.qseq_remap[aa_pos_span-1]
+                    hit.qseq = hit.qseq[mask:]
+                    hit.sseq = hit.sseq[mask:]
+                    hit.qseq_remap = remap(hit.qseq)
+                    hit.sseq_remap = remap(hit.sseq)
+
+
+
+            else:
+                delta = hit.qstart - current_hit.qend + 1
+                print("Delta: ",delta)
+                aa_pos_span = math.ceil(delta / 3)
+                current_hit.qseq += "X" * aa_pos_span
+
+            chain.append(current_hit.qseq)
+
+            current_hit = hit
+        chain.append(current_hit.qseq[current_hit.mask:])
+
+    else:
+        chain.append(blastx_hits.qseq.value[0])
+
+
+    return (blastx_hits.qseqid.values[0], "".join(chain))
+
+
+def blastx_align(fasta_list, blastdb):
+    
+
+    temp_blast_query = mkstemp(prefix="virulign-tools-blastx",suffix=".fasta")
+
+    write_fasta(fasta_list, temp_blast_query)
+    
+    BLASTX_COMMAND = "blastx -db {db} -query {query} -outfmt '6#qseqid#sseqid#bitscore#qstart#qend#qseq'"
+
+    blast_output, stderr, returncode = run_command(BLASTX_COMMAND.format(blastdb, temp_blast_query))
+
+    if returncode == 0:
+        with open(io.StringIO(blast_output)) as blast_output_f:
+            blastx_df = pd.read_table(blast_output_f, names=["qseqid", "sseqid", "bitscore", "qstart", "qend", "qseq"]).\
+                            sort_values(["qseqid","qstart"])
+
+            blastx_df_maxbitscores = blastx_df.group_by(["qseqid","sseqid"]).\
+                    aggregate({'bitscore': lambda x:x.bitscore.sum()}).\
+                    sort_values("bitscore",ascending=False).reset_index().\
+                    groupby("qseqid").first().\
+                    reset_index()
+
+
+
+            
+            
+
+
+
+    return
 
 
 
@@ -279,6 +419,11 @@ if __name__ == "__main__":
 
                 if n_missing_entries == 0:
                     break
+        if (n_missing_entries > 0) and (args.do_blasx):
+            pass
+
+            
+
 
     final_alignments_aa = fasta_initial_alignment_aa + temp_alignments
 

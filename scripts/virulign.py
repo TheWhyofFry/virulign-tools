@@ -9,20 +9,8 @@ Procedure
 2. If some make it through
    - recreate a reference from those sequences (assuming they do not start/end with gaps)
    - run virulign on these references 
-3. If none make it through/procedure in (2) fails on some:
-   - Run sequences through blast database
-   - For each match, run virulign on a reference made from the target sequence
-   - Do until matches are exhausted/all sequences have been aligned
-4. If 3 fails - last ditch effort:
-   - Run the sequences through blastx
-   - Get all the HSPs/target
-   - Highest bit score wins
-   - Fill in positionss not covered with "X"
-5. If 2-3 fails, for the nucleotide alignment, two options:
-   - Just do a normal alignment
-   - If some of the sequences made it through, add
-     the subsequent sequences to the existing alignment
-
+3. Failed sequences are run through AGA
+4. May improve this in future - create references from blast hits and realign to HXB2 after the fact
 
 
 virulign ref.xml/fasta target --exportWithReference yes --exportAlphabet Nucleotides/Aminoacids --exportKind GlobalAlignment
@@ -37,6 +25,9 @@ import io
 import tempfile
 import pandas as pd
 import math
+from runcommand import run_output
+import agagen
+
 
 
 def remap(seq):
@@ -92,16 +83,6 @@ def write_fasta(fasta_list, output_file="string"):
             outfile.write(output)
         return True
 
-def run_output(command):
-    print(command)
-    command_split = list(map(lambda x:x.replace("#", " "),command.split(" ")))
-    proc = subprocess.Popen(command_split, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    stdout, stderr = proc.communicate()
-    stdout = stdout.decode('utf-8').replace("\\n","\n")
-    stderr = stderr.decode('utf-8').replace("\\n","\n")
-    returncode = proc.returncode
-    
-    return stdout, stderr, returncode
 
 def parse_virulign(stdout):
     
@@ -126,7 +107,7 @@ def find_missing_entries(query_fasta, virulign_fasta):
 def blast(missing_entries, blast_db, blast_prog="blastn", other_options=""):
 
 
-    blast_command = "{blast_prog} -query {query} -db {blast_db} -outfmt '6 qseqid sseqid pident length mismatch qstart qend sstart ssend bitscore qseq sseq' {other_options}"
+    blast_command = "{blast_prog} -query {query} -db {blast_db} -outfmt '6 qseqid sseqid pident length mismatch qstart qend sstart send bitscore qseq sseq' {other_options}"
 
 
 
@@ -205,6 +186,40 @@ def get_valid_hits(blastx_hits):
 
         print(blastx_hits[["qstart","qend","sstart","send"]])
         return blastx_hits
+
+def remove_embedded(blastx_hits):
+    
+    if len(blastx_hits) == 1:
+        return blastx_hits
+
+
+    blastx_hits = blastx_hits.sort_values(["sstart","send"], ascending=[True,False]).copy()
+    # Debug counter
+    counter = 0 
+    l = len(blastx_hits)
+    while True:
+        if counter > l:
+            break
+        sstart = blastx_hits.sstart.values
+        send   = blastx_hits.send.values
+
+
+        within_start = sstart[1:] > sstart[:-1]
+        within_end   = send[1:] < send[:-1]
+
+        logical = [True]
+        logical.extend(~(within_end & within_start))
+        
+        if len(blastx_hits[logical]) == len(blastx_hits):
+            return blastx_hits
+        blastx_hits = blastx_hits[logical]
+        
+        counter += 1
+
+
+
+    return blastx_hits
+
 
 def recreate_seq(blastx_hits):
 
@@ -315,11 +330,29 @@ def blastx_align(fasta_list, blastdb):
 
     return
 
+def write_fasta(fasta_list, fasta_file):
+
+    with open(fasta_file, "w") as ofile:
+        for title,seq in fasta_list:
+            ofile.write(">%s\n%s\n"%(title,seq))
 
 
+    return
 
 
+def mafft_wrapper(input_fasta, options="--localpair", tmp_dir="/tmp"):
+    
+    num, tmpfasta = tempfile.mkstemp(prefix="mafft", suffix=".fasta", dir=tmp_dir)
 
+    with open(tmpfasta, "w") as ofile:
+        for title, seq in input_fasta:
+            ofile.write(">%s\n%s\n"%(title,seq))
+
+    MAFFT_COMMAND = "mafft {options} {input}".format(options=options, input=tmpfasta)
+    stdout, stderr, returncode = run_output(MAFFT_COMMAND)
+
+
+    return stdout
 
 if __name__ == "__main__":
     import argparse
@@ -328,14 +361,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("-i", type=str, dest="input_fasta", help="Input FASTA file")
-    parser.add_argument("-n", type=str, dest="output_fasta", help="Output FASTA file (nuc)")
-    parser.add_argument("-a", type=str, dest="output_fasta", help="Output FASTA file (aa)")
+    parser.add_argument("-n", type=str, dest="output_fasta_nt", help="Output FASTA file (nuc)")
+    parser.add_argument("-a", type=str, dest="output_fasta_aa", help="Output FASTA file (aa)")
     parser.add_argument("-r", type=str, dest="virulign_ref_file", help="Initial Virulign reference file")
-    parser.add_argument("-b", type=str, dest="blastn", help="BLASTN DB", default="")
-    parser.add_argument("-B", type=str, dest="blastp", help="BLASTP DB", default="")
-    parser.add_argument("-X", action='store_true', dest="do_blastx", help="If all else fails, align with BLASTX")
-    parser.add_argument("-R", action='store_true', dest="do_selfref", help="Align failed sequences to sequences that passed first")
-    parser.add_argument("-N", action='store_true', dest="do_blastn", help="Repeat alignment for failed sequences using the specified BLASTN DB")
+    #parser.add_argument("-b", type=str, dest="blastn", help="BLASTN DB", default="")
+    #parser.add_argument("-B", type=str, dest="blastp", help="BLASTP DB", default="")
+    #parser.add_argument("-X", action='store_true', dest="do_blastx", help="If all else fails, align with BLASTX")
+    #parser.add_argument("-R", action='store_true', dest="do_selfref", help="Align failed sequences to sequences that passed first")
+    #parser.add_argument("-N", action='store_true', dest="do_blastn", help="Repeat alignment for failed sequences using the specified BLASTN DB")
     parser.add_argument("-s", type=int, dest="num_alignments", help="Number of blast alignments", default=20)
 
     
@@ -347,16 +380,28 @@ if __name__ == "__main__":
     n_query = len(fasta_initial)
 
     # Initial alignment
-    fasta_initial_alignment = initial_alignment(args.input_fasta, args.virulign_ref_file, maxFrameShifts=0, alphabet="Nucleotides")
+    fasta_initial_alignment_nt = initial_alignment(args.input_fasta, args.virulign_ref_file, maxFrameShifts=0, alphabet="Nucleotides")
     fasta_initial_alignment_aa = initial_alignment(args.input_fasta, args.virulign_ref_file, maxFrameShifts=0, alphabet="AminoAcids")
-    reference = fasta_initial_alignment[0]
+    reference_nt = list(fasta_initial_alignment_nt[0])
+    reference_aa = list(fasta_initial_alignment_aa[0])
+   
+    fasta_initial_alignment_nt = fasta_initial_alignment_nt[1:] 
+    fasta_initial_alignment_aa = fasta_initial_alignment_aa[1:] 
+
+    reference_nt[0] = reference_nt[0].split(' ')[0]
+    reference_aa[0] = reference_aa[0].split(' ')[0]
+
+    reference_nt = tuple(reference_nt)
+    reference_aa = tuple(reference_aa)
+
+
     # Missing alignemnts
 
-    missing_entries = find_missing_entries(fasta_initial, fasta_initial_alignment)
-    print([title for title,seq in fasta_initial])
-    print([title for title,seq in fasta_initial_alignment])
-    temp_alignments = []
+    missing_entries = find_missing_entries(fasta_initial, fasta_initial_alignment_nt)
+    temp_alignments_aa = []
+    temp_alignments_nt = []
     n_missing_entries = len(missing_entries)
+    
     print("Missing entries:", n_missing_entries)
 
     if n_missing_entries > 0:
@@ -364,6 +409,60 @@ if __name__ == "__main__":
         print("MISSING ENTRY FILE:", missing_entries_file, code)
         write_fasta(missing_entries, missing_entries_file)
 
+            
+        gb = agagen.create_aga_gb(reference_nt[1].replace("-","").replace(".",""), prot=reference_nt[0])
+
+        aga_alignments_nt = []
+        aga_alignments_aa = []
+
+        for title,seq in missing_entries:
+
+            aga = agagen.run_aga((title,seq,), genbank_str=gb, delete_temp=True)
+
+            aa_align, nt_align, full_align = aga
+
+            aa_align = agagen.extract_aligned_seqs(aa_align,title=title,full=False,replace_char="X")
+            nt_align = agagen.extract_aligned_seqs(nt_align,title=title,full=False,replace_char="N")
+
+            full_align = list(full_align[1])
+            full_align[0] = title
+
+            aga_alignments_nt.extend(nt_align)
+            aga_alignments_aa.extend(aa_align)
+            print("Current recovered:")
+            print([title for seq, title in aa_align])
+            temp_alignments_aa.extend(aa_align)
+            temp_alignments_nt.extend(nt_align)
+
+        
+        missing_entries_aga = find_missing_entries(missing_entries, aga_alignments_nt)
+
+
+        missing_entries = missing_entries_aga
+
+    print("AGA RECOVERED:")
+    print([title for title,seq in temp_alignments_aa])
+    final_alignments_aa = fasta_initial_alignment_aa + temp_alignments_aa
+    final_alignments_nt = fasta_initial_alignment_nt + temp_alignments_nt
+
+    if len(final_alignments_aa) > 0:
+        with open(args.output_fasta_aa, "w") as ofile_aa:
+            s = mafft_wrapper([reference_aa]+final_alignments_aa)
+            ofile_aa.write(s)
+
+        with open(args.output_fasta_nt, "w") as ofile_nt:
+            s = mafft_wrapper([reference_nt]+final_alignments_nt)
+            ofile_nt.write(s)
+
+        print("Wrote %s AA sequences and %s NT sequences:"%(len(fasta_initial_alignment_nt), len(fasta_initial_alignment_aa)))
+
+    if len(missing_entries) > 0:
+        print("Some sequences could not be aligned: "%("\n".join([title for title,seq in missing_entries])))
+
+    
+
+
+"""
         blastn_fasta_entries = []
 
         if (args.do_blastn):
@@ -398,9 +497,22 @@ if __name__ == "__main__":
         else:
             fasta_initial_alignment_ref = []
 
+
+            
+
+
+
+
+
+
+
+
+            
+
+
         
         # Placeholder
-        rep = True
+        rep = False
         if rep:
             print("Finding appropriate references ... ")
             alternative_alignments = fasta_initial_alignment_ref + blastn_fasta_entries
@@ -420,15 +532,16 @@ if __name__ == "__main__":
                 if n_missing_entries == 0:
                     break
         if (n_missing_entries > 0) and (args.do_blasx):
-            pass
 
+            blastx = blastx_align(missing_entries, args.blastp)
+
+            if len(blastx) > 1:
+                pass                    
+            pass
+"""
             
 
 
-    final_alignments_aa = fasta_initial_alignment_aa + temp_alignments
-
-    print(len(final_alignments_aa))
-    write_fasta(final_alignments_aa, "/dev/stderr")
         
 
                 
